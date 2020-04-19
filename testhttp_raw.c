@@ -25,7 +25,7 @@ void get_ip_port(char *ip_port, char **addr, char **port) {
     *port = strtok(NULL, ":");
 }
 
-int bytes_added(result_of_sprintf) {
+int bytes_added(int result_of_sprintf) {
     return (result_of_sprintf > 0) ? result_of_sprintf : 0;
 }
 
@@ -34,7 +34,7 @@ ssize_t create_request_str(char *dest, char *uri, char *addr, char *port,
     size_t length = 0;
 #define buf_append(format, args...) length += bytes_added(sprintf(dest + length, format, args))
     buf_append("GET %s HTTP/1.1\r\n", uri);
-    buf_append("Host %s:%s\r\n", addr, port);
+    buf_append("Host: %s:%s\r\n", addr, port);
     buf_append("User-Agent: %s\r\n", "testhttp_raw/2.13.7");
     buf_append("Accept: %s\r\n", "*/*");
     buf_append("Connection: %s\r\n", "close");
@@ -62,12 +62,10 @@ int main(int argc, char *argv[]) {
     get_ip_port(argv[1], &addr, &port);
     cookie_filename = argv[2];
     uri = argv[3];
-    FILE* cookies = fopen(cookie_filename, "r");
 
-    create_request_str(buf, uri, addr, port, cookies);
-    fclose(cookies);
-    puts(buf);
-    return 0;
+
+//    puts(buf);
+//    return 0;
 
     sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock < 0) {
@@ -92,15 +90,32 @@ int main(int argc, char *argv[]) {
     }
     freeaddrinfo(addr_result);
 
-    do {
-        printf("line:");
-        fgets(line, sizeof line, stdin);
-        if (write(sock, line, strlen(line)) < 0)
-            syserr("writing on stream socket");
-    } while (strncmp(line, bye_string, sizeof bye_string - 1));
+    FILE *cookies = fopen(cookie_filename, "r");
+    ssize_t req_len = create_request_str(buf, uri, addr, port, cookies);
+    fclose(cookies);
+//    char msg[] = "GET / HTTP/1.1\r\nHost: www.mimuw.edu.pl:80\r\n\r\n";
+//    puts(msg);
+    fprintf(stderr, "%s", buf);
+    if (write(sock, buf, strlen(buf)) < 0)
+        syserr("writing on stream socket");
+
+    int resp_len;
+    while((resp_len = read(sock, buf, sizeof(buf) - 1)) > 0) {
+        buf[resp_len] = '\0';
+        printf("%s", buf);
+    }
+
+    if(resp_len < 0)
+        syserr("response read error");
+
+//    do {
+//        printf("line:");
+//        fgets(line, sizeof line, stdin);
+//        if (write(sock, line, strlen(line)) < 0)
+//            syserr("writing on stream socket");
+//    } while (strncmp(line, bye_string, sizeof bye_string - 1));
     if (close(sock) < 0)
         syserr("closing stream socket");
-
     return 0;
 }
 
