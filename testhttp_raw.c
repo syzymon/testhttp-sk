@@ -45,6 +45,8 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
     static size_t offset = 0;
     static size_t read_till = 0;
 
+    static size_t no_reads = 0;
+
     char *crlf_position = NULL;
     size_t line_len;
     assert(buf[read_till] == '\0');
@@ -55,6 +57,9 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
                 sock, buf + read_till, BUFFER_SIZE - read_till - 1);
         if (resp_len < 0)
             syserr("response read error");
+
+        fprintf(stderr, "Reads so far: %zu\n", ++no_reads);
+
         offset = read_till;
         assert(offset + resp_len < BUFFER_SIZE);
         read_till += resp_len;
@@ -127,10 +132,18 @@ int main(int argc, char *argv[]) {
 //    char msg[] = "GET / HTTP/1.1\r\nHost: www.mimuw.edu.pl:80\r\n\r\n";
 //    puts(msg);
 //    fprintf(stderr, "%s", buf);
-    if (write(sock, buf, req_len) < 0)
+    ssize_t line_len;
+    size_t req_wrote = 0;
+
+    // Make sure to send the whole request.
+    while (req_wrote < req_len &&
+           (line_len = write(sock, buf + req_wrote, req_len - req_wrote))
+           > 0) {
+        req_wrote += line_len;
+    }
+    if (line_len < 0)
         syserr("writing on stream socket");
 
-    ssize_t line_len;
     char *line;
     buf[0] = '\0';
     if (get_line_from_sock(sock, &line) <= 0)
