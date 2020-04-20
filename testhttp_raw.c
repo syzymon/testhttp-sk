@@ -2,6 +2,7 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <assert.h>
@@ -50,6 +51,7 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
     char *crlf_position = NULL;
     size_t line_len;
     assert(buf[read_till] == '\0');
+//    fprintf(stderr, "Read till: %zu\n", read_till);
 
     while (!(crlf_position = strstr(buf + offset, CRLF))) {
         assert(read_till < BUFFER_SIZE - 1); // We don't want to read 0 bytes.
@@ -82,6 +84,8 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
 
     *line_ret = buf + offset;
     line_len = (crlf_position - *line_ret);
+    assert(offset + line_len < BUFFER_SIZE && buf[offset + line_len] == '\r'
+           && buf[offset + line_len + 1] == '\n');
     buf[offset + line_len] = '\0';
     offset = offset + line_len + 2;
     assert(offset < read_till);
@@ -152,12 +156,12 @@ int main(int argc, char *argv[]) {
     if (sscanf(line, "%*s %s", tmp) != 1)
         syserr("no response code detected");
     if (strcmp(tmp, "200") != 0) { // Response code different than 200 OK
-        printf("%s", tmp);
+        printf("%s\n", line);
         return 0;
     }
 
     bool chunked = false;
-    ssize_t content_len = -1;
+    ssize_t content_len = 0;
     while ((line_len = get_line_from_sock(sock, &line)) > 0) {
         int sscanf_read;
         if (sscanf(line, "%s%n", tmp, &sscanf_read) != 1)
@@ -177,10 +181,57 @@ int main(int argc, char *argv[]) {
     }
     if (line_len == -1)
         syserr("buffer overflow");
+    assert(line_len == 0 && line[0] == '\0' && line[1] == '\n');
+    // Copy the rest of read response
+    line += 2;
+    size_t resp_read = strlen(line);
+    assert(resp_read < BUFFER_SIZE - 1);
+    memmove(buf, line, resp_read);
 
-    // TODO: parse chunked
-//    if(chunked)
+    size_t chunk_size_pos = 0;
+    size_t chunk_size_fragmented = 0;
 
+    if(chunked)
+        fputs("CHUNKED\n", stderr);
+
+    do {
+        if (resp_read == BUFFER_SIZE - 1)
+            resp_read = 0;
+
+        while (resp_read < BUFFER_SIZE - 1 && (line_len = read(
+                sock, buf + resp_read, BUFFER_SIZE - resp_read - 1
+        ))) {
+            resp_read += line_len;
+        }
+        buf[resp_read] = '\0';
+        tmp[0] = '\0'; // TODO: necessary?
+
+        if (chunked) {
+            // TODO: corner case - chunk size on the limit of buffer!
+            size_t chunk_size = 0;
+            while (chunk_size_pos < resp_read) {
+                sscanf(buf + chunk_size_pos, "%[^\r\n]s", tmp + chunk_size_fragmented);
+                fprintf(stderr, "%s\n", tmp);
+                assert(*(buf + chunk_size_pos + strlen(tmp + chunk_size_fragmented)) == '\r');
+                assert(chunk_size_pos + strlen(tmp) <= resp_read);
+
+                if (chunk_size_pos + strlen(tmp) == resp_read) { // TODO: 2 o
+                    chunk_size_fragmented = strlen(tmp);
+                } else {
+                    chunk_size = strtoul(tmp, NULL, 16);
+                    content_len += chunk_size;
+                    chunk_size_pos += (chunk_size + strlen(tmp) + 4); // TODO: why?
+                    chunk_size_fragmented = 0;
+                }
+            }
+            if(chunk_size_fragmented == 0 && chunk_size == 0)
+                break; // End of read - encountered 0 chunk.
+            chunk_size_pos -= resp_read;
+        }
+    } while (resp_read == BUFFER_SIZE - 1);
+
+    fprintf(stderr, "%zu\n", resp_read);
+    printf("Dlugosc zasobu: %zu\n", content_len);
 
     if (close(sock) < 0)
         syserr("closing stream socket");
