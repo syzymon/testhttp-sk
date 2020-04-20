@@ -7,9 +7,10 @@
 #include <unistd.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include "err.h"
 
-#define BUFFER_SIZE 1048576
+#define BUFFER_SIZE 512
 #define TMP_SIZE 1024
 #define CRLF "\r\n"
 char buf[BUFFER_SIZE];
@@ -90,6 +91,68 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
     offset = offset + line_len + 2;
     assert(offset < read_till);
     return line_len;
+}
+
+size_t read_content(int sock, size_t resp_read, bool chunked) {
+    size_t content_len = 0;
+    size_t chunk_size_pos = 0;
+    size_t chunk_size_fragmented = 0;
+
+    size_t _total_read = 0;
+    size_t _no_chunks = 0;
+    size_t _chunksize_lens = 0;
+    do {
+        if (resp_read == BUFFER_SIZE - 1)
+            resp_read = 0;
+
+        ssize_t read_len;
+        while (resp_read < BUFFER_SIZE - 1 && (read_len = read(
+                sock, buf + resp_read, BUFFER_SIZE - resp_read - 1
+        )) > 0) {
+            resp_read += read_len;
+        }
+        if (read_len == -1)
+            syserr("response read error");
+
+        _total_read += resp_read;
+
+        buf[resp_read] = '\0';
+        tmp[0] = '\0'; // TODO: necessary?
+
+        if (chunked) {
+            // TODO: corner case - chunk size on the limit of buffer!
+            while (chunk_size_pos < resp_read) {
+                assert(isdigit(*(buf + chunk_size_pos)));
+                if(resp_read)
+                sscanf(buf + chunk_size_pos, "%[^\r\n]s",
+                       tmp + chunk_size_fragmented);
+                fprintf(stderr, "%s\n", tmp);
+                assert(*(buf + chunk_size_pos +
+                         strlen(tmp + chunk_size_fragmented)) == '\r');
+                assert(chunk_size_pos + strlen(tmp) <= resp_read);
+
+                if (chunk_size_pos + strlen(tmp) == resp_read) { // TODO: 2 o
+                    chunk_size_fragmented = strlen(tmp);
+                } else {
+                    ++_no_chunks;
+                    _chunksize_lens += strlen(tmp);
+
+                    size_t chunk_size = strtoul(tmp, NULL, 16);
+                    content_len += chunk_size;
+                    chunk_size_pos += (chunk_size + strlen(tmp) +
+                                       4); // TODO: why?
+                    chunk_size_fragmented = 0;
+                }
+            }
+            chunk_size_pos -= resp_read;
+        } else {
+            content_len += resp_read;
+        }
+    } while (resp_read == BUFFER_SIZE - 1);
+    assert(!chunked ||
+           (_total_read == content_len + _no_chunks * 4 + _chunksize_lens
+           && chunk_size_pos == 0));
+    return content_len;
 }
 
 //char* cookies
@@ -188,49 +251,14 @@ int main(int argc, char *argv[]) {
     assert(resp_read < BUFFER_SIZE - 1);
     memmove(buf, line, resp_read);
 
-    size_t chunk_size_pos = 0;
-    size_t chunk_size_fragmented = 0;
-
-    if(chunked)
+    if (chunked) {
         fputs("CHUNKED\n", stderr);
+    }
+    size_t read_content_len = read_content(sock, resp_read, chunked);
+    assert(chunked || read_content_len == content_len);
 
-    do {
-        if (resp_read == BUFFER_SIZE - 1)
-            resp_read = 0;
-
-        while (resp_read < BUFFER_SIZE - 1 && (line_len = read(
-                sock, buf + resp_read, BUFFER_SIZE - resp_read - 1
-        ))) {
-            resp_read += line_len;
-        }
-        buf[resp_read] = '\0';
-        tmp[0] = '\0'; // TODO: necessary?
-
-        if (chunked) {
-            // TODO: corner case - chunk size on the limit of buffer!
-            size_t chunk_size = 0;
-            while (chunk_size_pos < resp_read) {
-                sscanf(buf + chunk_size_pos, "%[^\r\n]s", tmp + chunk_size_fragmented);
-                fprintf(stderr, "%s\n", tmp);
-                assert(*(buf + chunk_size_pos + strlen(tmp + chunk_size_fragmented)) == '\r');
-                assert(chunk_size_pos + strlen(tmp) <= resp_read);
-
-                if (chunk_size_pos + strlen(tmp) == resp_read) { // TODO: 2 o
-                    chunk_size_fragmented = strlen(tmp);
-                } else {
-                    chunk_size = strtoul(tmp, NULL, 16);
-                    content_len += chunk_size;
-                    chunk_size_pos += (chunk_size + strlen(tmp) + 4); // TODO: why?
-                    chunk_size_fragmented = 0;
-                }
-            }
-            if(chunk_size_fragmented == 0 && chunk_size == 0)
-                break; // End of read - encountered 0 chunk.
-            chunk_size_pos -= resp_read;
-        }
-    } while (resp_read == BUFFER_SIZE - 1);
-
-    fprintf(stderr, "%zu\n", resp_read);
+    content_len = chunked ? read_content_len : content_len;
+//    assert(total_read >= content_len);
     printf("Dlugosc zasobu: %zu\n", content_len);
 
     if (close(sock) < 0)
