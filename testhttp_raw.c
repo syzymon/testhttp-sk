@@ -10,7 +10,7 @@
 #include <ctype.h>
 #include "err.h"
 
-#define BUFFER_SIZE 512
+#define BUFFER_SIZE 128
 #define TMP_SIZE 1024
 #define CRLF "\r\n"
 char buf[BUFFER_SIZE];
@@ -55,7 +55,15 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
 //    fprintf(stderr, "Read till: %zu\n", read_till);
 
     while (!(crlf_position = strstr(buf + offset, CRLF))) {
+        if(offset < read_till && read_till == BUFFER_SIZE - 1) {
+            read_till -= offset;
+            memmove(buf, buf + offset, read_till);
+            offset = 0;
+        } else {
+            offset = read_till;
+        }
         assert(read_till < BUFFER_SIZE - 1); // We don't want to read 0 bytes.
+
         ssize_t resp_len = read(
                 sock, buf + read_till, BUFFER_SIZE - read_till - 1);
         if (resp_len < 0)
@@ -63,7 +71,6 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
 
         fprintf(stderr, "Reads so far: %zu\n", ++no_reads);
 
-        offset = read_till;
         assert(offset + resp_len < BUFFER_SIZE);
         read_till += resp_len;
         assert(offset < read_till);
@@ -123,9 +130,9 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
             // TODO: corner case - chunk size on the limit of buffer!
             while (chunk_size_pos < resp_read) {
                 assert(isdigit(*(buf + chunk_size_pos)));
-                if(resp_read)
-                sscanf(buf + chunk_size_pos, "%[^\r\n]s",
-                       tmp + chunk_size_fragmented);
+                if (resp_read)
+                    sscanf(buf + chunk_size_pos, "%[^\r\n]s",
+                           tmp + chunk_size_fragmented);
                 fprintf(stderr, "%s\n", tmp);
                 assert(*(buf + chunk_size_pos +
                          strlen(tmp + chunk_size_fragmented)) == '\r');
@@ -151,7 +158,7 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
     } while (resp_read == BUFFER_SIZE - 1);
     assert(!chunked ||
            (_total_read == content_len + _no_chunks * 4 + _chunksize_lens
-           && chunk_size_pos == 0));
+            && chunk_size_pos == 0));
     return content_len;
 }
 
