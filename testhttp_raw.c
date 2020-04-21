@@ -10,8 +10,9 @@
 #include <ctype.h>
 #include "err.h"
 
-#define BUFFER_SIZE 128
-#define TMP_SIZE 1024
+// TODO: production TMP and buffer size
+#define BUFFER_SIZE 65536
+#define TMP_SIZE 65536
 #define CRLF "\r\n"
 char buf[BUFFER_SIZE];
 char tmp[TMP_SIZE];
@@ -55,7 +56,7 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
 //    fprintf(stderr, "Read till: %zu\n", read_till);
 
     while (!(crlf_position = strstr(buf + offset, CRLF))) {
-        if(offset < read_till && read_till == BUFFER_SIZE - 1) {
+        if (offset < read_till && read_till == BUFFER_SIZE - 1) {
             read_till -= offset;
             memmove(buf, buf + offset, read_till);
             offset = 0;
@@ -108,6 +109,9 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
     size_t _total_read = 0;
     size_t _no_chunks = 0;
     size_t _chunksize_lens = 0;
+
+    tmp[0] = '\0'; // TODO: necessary?
+
     do {
         if (resp_read == BUFFER_SIZE - 1)
             resp_read = 0;
@@ -124,29 +128,31 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
         _total_read += resp_read;
 
         buf[resp_read] = '\0';
-        tmp[0] = '\0'; // TODO: necessary?
-
         if (chunked) {
             // TODO: corner case - chunk size on the limit of buffer!
             while (chunk_size_pos < resp_read) {
-                assert(isdigit(*(buf + chunk_size_pos)));
+                // TODO: falsy assert - isdigit + hex
+//                assert(isdigit(*(buf + chunk_size_pos)));
                 if (resp_read)
                     sscanf(buf + chunk_size_pos, "%[^\r\n]s",
                            tmp + chunk_size_fragmented);
-                fprintf(stderr, "%s\n", tmp);
-                assert(*(buf + chunk_size_pos +
-                         strlen(tmp + chunk_size_fragmented)) == '\r');
-                assert(chunk_size_pos + strlen(tmp) <= resp_read);
+                assert(chunk_size_pos + strlen(tmp + chunk_size_fragmented) <=
+                       resp_read);
+//                fprintf(stderr, "%s\n", tmp);
 
                 if (chunk_size_pos + strlen(tmp) == resp_read) { // TODO: 2 o
                     chunk_size_fragmented = strlen(tmp);
+                    chunk_size_pos += strlen(tmp);
                 } else {
+                    assert(*(buf + chunk_size_pos +
+                             strlen(tmp + chunk_size_fragmented)) == '\r');
                     ++_no_chunks;
                     _chunksize_lens += strlen(tmp);
 
                     size_t chunk_size = strtoul(tmp, NULL, 16);
                     content_len += chunk_size;
-                    chunk_size_pos += (chunk_size + strlen(tmp) +
+                    chunk_size_pos += (chunk_size +
+                                       strlen(tmp + chunk_size_fragmented) +
                                        4); // TODO: why?
                     chunk_size_fragmented = 0;
                 }
@@ -237,7 +243,7 @@ int main(int argc, char *argv[]) {
         if (sscanf(line, "%s%n", tmp, &sscanf_read) != 1)
             syserr("bad format");
         line += sscanf_read + 1; // Header name + whitespace
-
+        // TODO: strcasecmp
         if (!strcmp(tmp, "Set-Cookie:")) {
             sscanf(line, "%[^;]s", tmp);
             printf("%s\n", tmp);
