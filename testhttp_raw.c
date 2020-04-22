@@ -48,56 +48,60 @@ ssize_t get_line_from_sock(int sock, char **line_ret) {
     static size_t offset = 0;
     static size_t read_till = 0;
 
-    static size_t no_reads = 0;
+    static size_t _no_reads = 0;
 
     char *crlf_position = NULL;
     size_t line_len;
     assert(buf[read_till] == '\0');
 //    fprintf(stderr, "Read till: %zu\n", read_till);
 
-    while (!(crlf_position = strstr(buf + offset, CRLF))) {
-        if (offset < read_till && read_till == BUFFER_SIZE - 1) {
+    while (offset == read_till ||
+           !(crlf_position = strstr(buf + offset, CRLF))) {
+        if (read_till == BUFFER_SIZE - 1) {
+            if (read_till == offset)
+                syserr("buffer overflow");
             read_till -= offset;
             memmove(buf, buf + offset, read_till);
             offset = 0;
         } else {
-            offset = read_till;
+            offset = read_till; // TODO: fragment?
+//            offset = read_till - (buf[read_till - 1] == '\r');
         }
         assert(read_till < BUFFER_SIZE - 1); // We don't want to read 0 bytes.
 
-        ssize_t resp_len = read(
-                sock, buf + read_till, BUFFER_SIZE - read_till - 1);
+        ssize_t resp_len;
+        while((resp_len = read(
+                sock, buf + read_till, BUFFER_SIZE - read_till - 1)) > 0) {
+//            fprintf(stderr, "Reads so far: %zu\n", ++_no_reads);
+            assert(offset + resp_len < BUFFER_SIZE);
+            read_till += resp_len;
+            assert(offset < read_till);
+        }
         if (resp_len < 0)
             syserr("response read error");
-
-        fprintf(stderr, "Reads so far: %zu\n", ++no_reads);
-
-        assert(offset + resp_len < BUFFER_SIZE);
-        read_till += resp_len;
-        assert(offset < read_till);
-
         buf[read_till] = '\0';
-        if (read_till == BUFFER_SIZE - 1) {
-            if ((crlf_position = strstr(buf + offset, CRLF)))
-                break;
-            else if (offset > 0) {
-                read_till -= offset;
-                memmove(buf, buf + offset, read_till);
-                offset = 0;
-            } else {
-                return -1; // Buffer overflow.
-            }
-        }
+//        if (read_till == BUFFER_SIZE - 1) {
+//            if ((crlf_position = strstr(buf + offset, CRLF)))
+//                break;
+//            else if (offset > 0) {
+//                read_till -= offset;
+//                memmove(buf, buf + offset, read_till);
+//                offset = 0;
+//            } else {
+//                return -1; // Buffer overflow.
+//            }
+//        }
         assert(offset < read_till);
     }
 
     *line_ret = buf + offset;
     line_len = (crlf_position - *line_ret);
+    // Found CRLF!!!
     assert(offset + line_len < BUFFER_SIZE && buf[offset + line_len] == '\r'
            && buf[offset + line_len + 1] == '\n');
     buf[offset + line_len] = '\0';
-    offset = offset + line_len + 2;
-    assert(offset < read_till);
+    offset += line_len + 2;
+    assert(line_len == 0 || offset < read_till);
     return line_len;
 }
 
@@ -138,7 +142,7 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
                            tmp + chunk_size_fragmented);
                 assert(chunk_size_pos + strlen(tmp + chunk_size_fragmented) <=
                        resp_read);
-//                fprintf(stderr, "%s\n", tmp);
+                fprintf(stderr, "%s\n", tmp);
 
                 if (chunk_size_pos + strlen(tmp) == resp_read) { // TODO: 2 o
                     chunk_size_fragmented = strlen(tmp);
@@ -205,14 +209,13 @@ int main(int argc, char *argv[]) {
     freeaddrinfo(addr_result);
 
     FILE *cookies = fopen(cookie_filename, "r");
+    if (cookies == NULL)
+        syserr("cannot open cookie file");
     ssize_t req_len = create_request_str(buf, uri, addr, port, cookies);
     fclose(cookies);
-//    char msg[] = "GET / HTTP/1.1\r\nHost: www.mimuw.edu.pl:80\r\n\r\n";
-//    puts(msg);
-//    fprintf(stderr, "%s", buf);
+
     ssize_t line_len;
     size_t req_wrote = 0;
-
     // Make sure to send the whole request.
     while (req_wrote < req_len &&
            (line_len = write(sock, buf + req_wrote, req_len - req_wrote))
@@ -226,7 +229,6 @@ int main(int argc, char *argv[]) {
     buf[0] = '\0';
     if (get_line_from_sock(sock, &line) <= 0)
         syserr("bad HTTP response format");
-
     if (sscanf(line, "%*s %s", tmp) != 1)
         syserr("no response code detected");
     if (strcmp(tmp, "200") != 0) { // Response code different than 200 OK
@@ -258,19 +260,17 @@ int main(int argc, char *argv[]) {
     assert(line_len == 0 && line[0] == '\0' && line[1] == '\n');
     // Copy the rest of read response
     line += 2;
+    // Get content read so far.
     size_t resp_read = strlen(line);
     assert(resp_read < BUFFER_SIZE - 1);
     memmove(buf, line, resp_read);
 
-    if (chunked) {
-        fputs("CHUNKED\n", stderr);
-    }
     size_t read_content_len = read_content(sock, resp_read, chunked);
-    assert(chunked || read_content_len == content_len);
+//    assert(chunked || read_content_len == content_len);
 
-    content_len = chunked ? read_content_len : content_len;
+//    content_len = chunked ? read_content_len : content_len;
 //    assert(total_read >= content_len);
-    printf("Dlugosc zasobu: %zu\n", content_len);
+    printf("Dlugosc zasobu: %zu\n", read_content_len);
 
     if (close(sock) < 0)
         syserr("closing stream socket");
