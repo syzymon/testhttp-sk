@@ -168,8 +168,6 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
     return content_len;
 }
 
-//char* cookies
-
 int main(int argc, char *argv[]) {
     int rc;
     int sock;
@@ -244,14 +242,14 @@ int main(int argc, char *argv[]) {
             syserr("bad format");
         line += sscanf_read + 1; // Header name + whitespace
         // TODO: strcasecmp
-        if (!strcmp(tmp, "Set-Cookie:")) {
+        if (!strcasecmp(tmp, "Set-Cookie:")) {
             sscanf(line, "%[^;]s", tmp);
             printf("%s\n", tmp);
-        } else if (!strcmp(tmp, "Transfer-Encoding:")) {
+        } else if (!strcasecmp(tmp, "Transfer-Encoding:")) {
             sscanf(line, "%s", tmp);
-            if (!strcmp(tmp, "chunked"))
+            if (!strcasecmp(tmp, "chunked"))
                 chunked = true;
-        } else if (!strcmp(tmp, "Content-Length:")) {
+        } else if (!strcasecmp(tmp, "Content-Length:")) {
             sscanf(line, "%zu", &content_len);
         }
     }
