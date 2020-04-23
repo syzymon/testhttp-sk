@@ -31,6 +31,8 @@ typedef enum HeaderField {
     OTHER = 4
 } HeaderField;
 
+size_t receive_response(int sock, char *buffer, size_t max_to_read);
+
 size_t
 read_headers(int sock, char **status_line, bool *chunked, ssize_t *content_len);
 
@@ -90,60 +92,58 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
     size_t _no_chunks = 0;
     size_t _chunksize_lens = 0;
 
-    tmp[0] = '\0'; // TODO: necessary?
-
-    do {
-        if (resp_read == BUFFER_SIZE - 1)
-            resp_read = 0;
-
-        ssize_t read_len;
-        while (resp_read < BUFFER_SIZE - 1 && (read_len = read(
-                sock, buf + resp_read, BUFFER_SIZE - resp_read - 1
-        )) > 0) {
-            resp_read += read_len;
-        }
-        if (read_len == -1)
-            syserr("response read error");
-
+    size_t read_len = 0;
+    while (resp_read > 0 ||
+           (read_len = receive_response(sock, buf + resp_read,
+                                        BUFFER_SIZE - resp_read)) > 0) {
+        resp_read += read_len;
         _total_read += resp_read;
 
-        buf[resp_read] = '\0';
         if (chunked) {
-            // TODO: corner case - chunk size on the limit of buffer!
             while (chunk_size_pos < resp_read) {
-                // TODO: falsy assert - isdigit + hex
-//                assert(isdigit(*(buf + chunk_size_pos)));
-                if (resp_read)
-                    sscanf(buf + chunk_size_pos, "%[^\r\n]s",
-                           tmp + chunk_size_fragmented);
-                assert(chunk_size_pos + strlen(tmp + chunk_size_fragmented) <=
+                assert((chunk_size_fragmented > 0 &&
+                       (buf[chunk_size_pos] == '\r' || buf[chunk_size_pos] == '\n')) ||
+                       isxdigit(*(buf + chunk_size_pos)));
+//                ssize_t chunk_size_len = find_crlf(buf + chunk_size_pos,
+//                                                   resp_read - chunk_size_pos);
+                char* cr_pos = memchr(buf + chunk_size_pos, '\r', resp_read - chunk_size_pos);
+//                if (chunk_size_len == -1) {
+//                    chunk_size_len = resp_read - chunk_size_pos;
+//                }
+                size_t chunk_size_len = (cr_pos == NULL) ? (resp_read - chunk_size_pos) :
+                                        (cr_pos - (buf + chunk_size_pos));
+
+                memcpy(tmp + chunk_size_fragmented, buf + chunk_size_pos,
+                       chunk_size_len);
+//                sscanf(buf + chunk_size_pos, "%[^\r\n]s",
+//                       tmp + chunk_size_fragmented);
+                assert(chunk_size_pos + chunk_size_len <=
                        resp_read);
 //                fprintf(stderr, "%s\n", tmp);
 
-                if (chunk_size_pos + strlen(tmp) == resp_read) { // TODO: 2 o
-                    chunk_size_fragmented = strlen(tmp);
-                    chunk_size_pos += strlen(tmp);
+                if (chunk_size_pos + chunk_size_len == resp_read) { // TODO: 2 o
+                    chunk_size_fragmented = chunk_size_len;
+                    chunk_size_pos +=
+                            chunk_size_len /*+ (buf[resp_read - 1] == '\r')*/;
                 } else {
                     assert(*(buf + chunk_size_pos +
-                             strlen(tmp + chunk_size_fragmented)) == '\r');
+                             chunk_size_len) == '\r');
                     ++_no_chunks;
-                    _chunksize_lens += strlen(tmp);
-
+                    _chunksize_lens += chunk_size_len + chunk_size_fragmented;
+                    tmp[chunk_size_fragmented + chunk_size_len] = '\0';
                     size_t chunk_size = strtoul(tmp, NULL, 16);
                     content_len += chunk_size;
-                    chunk_size_pos += (chunk_size +
-                                       strlen(tmp + chunk_size_fragmented) +
+                    chunk_size_pos += (chunk_size + chunk_size_len +
                                        4); // TODO: why?
                     chunk_size_fragmented = 0;
                 }
             }
             chunk_size_pos -= resp_read;
-
-
         } else {
             content_len += resp_read;
         }
-    } while (resp_read == BUFFER_SIZE - 1);
+        resp_read = 0;
+    }
     assert(!chunked ||
            (_total_read == content_len + _no_chunks * 4 + _chunksize_lens
             && chunk_size_pos == 0));
@@ -265,18 +265,6 @@ int main(int argc, char *argv[]) {
  * @param max_to_read - maximum number of bytes to read.
  * @return number of bytes successfully read.
  */
-size_t receive_response(int sock, char *buffer, size_t max_to_read) {
-    size_t total_received_len = 0;
-    ssize_t read_res;
-    while ((read_res = read(
-            sock, buffer + total_received_len,
-            max_to_read - total_received_len)) > 0) {
-        total_received_len += read_res;
-    }
-    if (read_res < 0)
-        syserr("response read error");
-    return total_received_len;
-}
 
 #define CRLF_LEN 2
 #define CHUNKED_LEN 7
@@ -505,4 +493,17 @@ size_t get_header_field_value_len(const char *value_begin, size_t line_len) {
     static const char DELIM = ';';
     char *delim_pos = memchr(value_begin, DELIM, line_len);
     return (delim_pos == NULL) ? line_len : delim_pos - value_begin;
+}
+
+size_t receive_response(int sock, char *buffer, size_t max_to_read) {
+    size_t total_received_len = 0;
+    ssize_t read_res;
+    while ((read_res = read(
+            sock, buffer + total_received_len,
+            max_to_read - total_received_len)) > 0) {
+        total_received_len += read_res;
+    }
+    if (read_res < 0)
+        syserr("response read error");
+    return total_received_len;
 }
