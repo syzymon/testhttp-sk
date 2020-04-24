@@ -10,16 +10,22 @@
 #include <ctype.h>
 #include "err.h"
 
-// TODO: production TMP and buffer size
-#define BUFFER_SIZE 256
+#define BUFFER_SIZE 8388608
 #define TMP_SIZE 65536
 #define CRLF "\r\n"
+#define CRLF_LEN 2
+#define CHUNKED_LEN 7
+#define STATUS_LEN 9
+#define SET_COOKIE_LEN 12
+#define CONTENT_LENGTH_LEN 16
+#define TRANSFER_ENC_LEN 19
 #define min(a, b)             \
 ({                           \
     __typeof__ (a) _a = (a); \
     __typeof__ (b) _b = (b); \
     _a < _b ? _a : _b;       \
 })
+
 char buf[BUFFER_SIZE];
 char tmp[TMP_SIZE];
 
@@ -51,107 +57,77 @@ size_t get_header_field_value_len(const char *value_begin, size_t line_len);
 
 void handle_cookie(char *value_begin, size_t line_len);
 
-void get_ip_port(char *ip_port, char **addr, char **port) {
-    *addr = strtok(ip_port, ":");
-    *port = strtok(NULL, ":");
-}
+void get_ip_port(char *ip_port, char **addr, char **port);
+
+size_t send_bytes(int sock, char *bytes, size_t n_bytes);
 
 int bytes_added(int result_of_sprintf) {
     return (result_of_sprintf > 0) ? result_of_sprintf : 0;
 }
 
-ssize_t create_request_str(char *dest, char *uri, char *addr, char *port,
-                           FILE *cookies_file) {
-    // TODO: Refactor the function to write directly to socket! Remove
-    // TODO: sprintf in printing cookies (possibly null byte there)!
-    size_t length = 0;
-#define buf_append(format, args...) \
-    length += bytes_added(sprintf(dest + length, format, args))
-    buf_append("GET %s HTTP/1.1\r\n", uri);
-    buf_append("Host: %s:%s\r\n", addr, port);
-    buf_append("User-Agent: %s\r\n", "testhttp_raw/2.13.7");
-    buf_append("Accept: %s\r\n", "*/*");
-    buf_append("Connection: %s\r\n", "close");
-    while (fgets(tmp, sizeof tmp, cookies_file)) {
-        tmp[strlen(tmp) - 1] = '\0'; // Remove trailing newline from fgets.
-        buf_append("Cookie: %s\r\n", tmp);
+void send_request(int sock, char *uri, char *addr, char *port,
+                  FILE *cookies_file);
+
+size_t read_content(int sock, size_t resp_read, bool chunked);
+
+int create_socket(const char *addr, const char *port);
+
+void argparse(int argc, char *argv[], char **addr, char **port,
+              char **cookie_filename, char **uri);
+
+void print_line(const char *line, const size_t len) {
+    fwrite(line, len, sizeof(char), stdout);
+    fputc('\n', stdout);
+}
+
+int main(int argc, char *argv[]) {
+    char *addr, *port, *cookie_filename, *uri;
+    argparse(argc, argv, &addr, &port, &cookie_filename, &uri);
+
+    int sock = create_socket(addr, port);
+
+    FILE *cookies = fopen(cookie_filename, "r");
+    if (cookies == NULL) {
+        syserr("cannot open cookie file");
     }
-    length += bytes_added(sprintf(dest + length, CRLF)); // End of request
-    return length;
+    send_request(sock, uri, addr, port, cookies);
+    fclose(cookies);
+
+    bool chunked = false;
+    ssize_t content_len = -1, content_read_in_buffer;
+    char *status_line = NULL;
+    content_read_in_buffer = read_headers(sock, &status_line, &chunked,
+                                          &content_len);
+    if (status_line != NULL) {
+        print_line(buf, content_read_in_buffer);
+        return 0;
+    }
+
+    size_t read_content_len = read_content(sock, content_read_in_buffer,
+                                           chunked);
+
+    printf("Dlugosc zasobu: %zu\n", read_content_len);
+
+    if (close(sock) < 0)
+        syserr("closing stream socket");
+    return 0;
 }
 
 
-size_t read_content(int sock, size_t resp_read, bool chunked) {
-    size_t content_len = 0;
-    size_t chunk_size_pos = 0;
-    size_t chunk_size_fragmented = 0;
-
-    size_t _total_read = 0;
-    size_t _no_chunks = 0;
-    size_t _chunksize_lens = 0;
-
-    size_t read_len = 0;
-    while (resp_read > 0 ||
-           (read_len = receive_response(sock, buf + resp_read,
-                                        BUFFER_SIZE - resp_read)) > 0) {
-        resp_read += read_len;
-        _total_read += resp_read;
-
-        if (chunked) {
-            while (chunk_size_pos < resp_read) {
-                assert((chunk_size_fragmented > 0 &&
-                        (buf[chunk_size_pos] == '\r' ||
-                         buf[chunk_size_pos] == '\n')) ||
-                       isxdigit(*(buf + chunk_size_pos)));
-//                ssize_t chunk_size_len = find_crlf(buf + chunk_size_pos,
-//                                                   resp_read - chunk_size_pos);
-                char *cr_pos = memchr(buf + chunk_size_pos, '\r',
-                                      resp_read - chunk_size_pos);
-//                if (chunk_size_len == -1) {
-//                    chunk_size_len = resp_read - chunk_size_pos;
-//                }
-                size_t chunk_size_len = (cr_pos == NULL) ? (resp_read -
-                                                            chunk_size_pos) :
-                                        (cr_pos - (buf + chunk_size_pos));
-
-                memcpy(tmp + chunk_size_fragmented, buf + chunk_size_pos,
-                       chunk_size_len);
-//                sscanf(buf + chunk_size_pos, "%[^\r\n]s",
-//                       tmp + chunk_size_fragmented);
-                assert(chunk_size_pos + chunk_size_len <=
-                       resp_read);
-//                fprintf(stderr, "%s\n", tmp);
-
-                if (chunk_size_pos + chunk_size_len == resp_read) { // TODO: 2 o
-                    chunk_size_fragmented = chunk_size_len;
-                    chunk_size_pos +=
-                            chunk_size_len /*+ (buf[resp_read - 1] == '\r')*/;
-                } else {
-                    assert(*(buf + chunk_size_pos +
-                             chunk_size_len) == '\r');
-                    ++_no_chunks;
-                    _chunksize_lens += chunk_size_len + chunk_size_fragmented;
-                    tmp[chunk_size_fragmented + chunk_size_len] = '\0';
-                    size_t chunk_size = strtoul(tmp, NULL, 16);
-                    // The end of chunked message is determined by a zero-chunk
-                    if(chunk_size == 0) // so we know the correct length now.
-                        return content_len;
-                    content_len += chunk_size;
-                    chunk_size_pos += (chunk_size + chunk_size_len +
-                                       4); // TODO: why?
-                    chunk_size_fragmented = 0;
-                }
-            }
-            chunk_size_pos -= resp_read;
-        } else {
-            content_len += resp_read;
-        }
-        resp_read = 0;
+void argparse(int argc, char **argv, char **addr, char **port,
+              char **cookie_filename, char **uri) {
+    if (argc != 4) {
+        fatal("%s <adres połączenia>:<port> <plik ciasteczek> <testowany adres http>",
+              argv[0]);
     }
-    assert(!chunked ||
-           (_total_read == content_len + _no_chunks * 4 + _chunksize_lens
-            && chunk_size_pos == 0));
-    return content_len;
+    get_ip_port(argv[1], addr, port);
+    *cookie_filename = argv[2];
+    *uri = argv[3];
+}
+
+void get_ip_port(char *ip_port, char **addr, char **port) {
+    *addr = strtok(ip_port, ":");
+    *port = strtok(NULL, ":");
 }
 
 int create_socket(const char *addr, const char *port) {
@@ -180,72 +156,20 @@ int create_socket(const char *addr, const char *port) {
     return sock;
 }
 
-void argparse(int argc, char *argv[], char **addr, char **port,
-              char **cookie_filename, char **uri) {
-    if (argc != 4) {
-        fatal("%s <adres połączenia>:<port> <plik ciasteczek> <testowany adres http>",
-              argv[0]);
-    }
-    get_ip_port(argv[1], addr, port);
-    *cookie_filename = argv[2];
-    *uri = argv[3];
-}
-
-void send_request(int sock, char *request_str, size_t request_len) {
+size_t send_bytes(int sock, char *bytes, size_t n_bytes) {
     ssize_t write_size;
     size_t req_wrote = 0;
-    // Make sure to send the whole request.
-    while (req_wrote < request_len &&
-           (write_size = write(sock, request_str + req_wrote,
-                               request_len - req_wrote))
+    while (req_wrote < n_bytes &&
+           (write_size = write(sock, bytes + req_wrote,
+                               n_bytes - req_wrote))
            > 0) {
         req_wrote += write_size;
     }
     if (write_size < 0)
         syserr("writing on stream socket");
+    return req_wrote;
 }
 
-void print_line(const char *line, const size_t len) {
-    // TODO: error check
-    fwrite(line, len, sizeof(char), stdout);
-    putc('\n', stdout);
-}
-
-int main(int argc, char *argv[]) {
-    char *addr, *port, *cookie_filename, *uri;
-    argparse(argc, argv, &addr, &port, &cookie_filename, &uri);
-
-    FILE *cookies = fopen(cookie_filename, "r");
-    if (cookies == NULL)
-        syserr("cannot open cookie file");
-    ssize_t req_len = create_request_str(buf, uri, addr, port, cookies);
-    fclose(cookies);
-
-    int sock = create_socket(addr, port);
-    send_request(sock, buf, req_len);
-
-    bool chunked = false;
-    ssize_t content_len = -1, content_read_in_buffer;
-    char *status_line = NULL;
-    content_read_in_buffer = read_headers(sock, &status_line, &chunked,
-                                          &content_len);
-    if (status_line != NULL) {
-        print_line(buf, content_read_in_buffer);
-        return 0;
-    }
-
-    size_t read_content_len = read_content(sock, content_read_in_buffer,
-                                           chunked);
-////    assert(chunked || read_content_len == content_len);
-//
-////    content_len = chunked ? read_content_len : content_len;
-////    assert(total_read >= content_len);
-    printf("Dlugosc zasobu: %zu\n", read_content_len);
-
-    if (close(sock) < 0)
-        syserr("closing stream socket");
-    return 0;
-}
 
 /**
  * Read maximum of `max_to_read` bytes from `sock` into `buffer`.
@@ -254,13 +178,46 @@ int main(int argc, char *argv[]) {
  * @param max_to_read - maximum number of bytes to read.
  * @return number of bytes successfully read.
  */
+size_t receive_response(int sock, char *buffer, size_t max_to_read) {
+    size_t total_received_len = 0;
+    ssize_t read_res;
+    while ((read_res = read(
+            sock, buffer + total_received_len,
+            max_to_read - total_received_len)) > 0) {
+        total_received_len += read_res;
+    }
+    if (read_res < 0)
+        syserr("response read error");
+    return total_received_len;
+}
 
-#define CRLF_LEN 2
-#define CHUNKED_LEN 7
-#define STATUS_LEN 9
-#define SET_COOKIE_LEN 12
-#define CONTENT_LENGTH_LEN 16
-#define TRANSFER_ENC_LEN 19
+void
+send_request(int sock, char *uri, char *addr, char *port, FILE *cookies_file) {
+    size_t length = 0;
+#define buf_append(format, args...) \
+    length += bytes_added(sprintf(buf + length, format, args))
+    buf_append("GET %s HTTP/1.1\r\n", uri);
+    buf_append("Host: %s:%s\r\n", addr, port);
+    buf_append("User-Agent: %s\r\n", "testhttp_raw/2.13.7");
+    buf_append("Accept: %s\r\n", "*/*");
+    buf_append("Connection: %s\r\n", "close");
+    size_t sent = send_bytes(sock, buf, length);
+
+    assert(sent == length);
+
+    while (fgets(tmp, sizeof tmp, cookies_file)) {
+        size_t cookie_line_len = strlen(tmp);
+        if (cookie_line_len >= 2 && tmp[cookie_line_len - 2] == '\r')
+            tmp[cookie_line_len - 2] = '\0';
+        else
+            tmp[cookie_line_len - 1] = '\0';
+        sprintf(buf, "Cookie: %s\r\n", tmp);
+        sent = send_bytes(sock, buf, strlen(buf));
+        assert(sent == strlen(buf));
+    }
+    sent = send_bytes(sock, CRLF, CRLF_LEN);
+    assert(sent == CRLF_LEN);
+}
 
 /**
  * Reads headers from given socket to the buffer, parsing parameters that we
@@ -281,7 +238,7 @@ size_t read_headers(int sock, char **status_line, bool *chunked,
                     ssize_t *content_len) {
     assert(*status_line == NULL);
     size_t chars_read = 0, chars_parsed = 0, received;
-    ssize_t current_line_len = -1; // TODO: maybe leave \r\n instead of chunksize first
+    ssize_t current_line_len = -1;
     while (current_line_len != 0 &&
            (received = receive_response(sock, buf + chars_read,
                                         BUFFER_SIZE - chars_read)) > 0) {
@@ -301,13 +258,11 @@ size_t read_headers(int sock, char **status_line, bool *chunked,
                 break;
             assert(chars_parsed <= chars_read);
         }
-//        assert(current_line_len != -1);
+
         if (current_line_len == 0 || chars_read == BUFFER_SIZE) {
-//            if(chars_parsed == 0)
-//                syserr("buffer overflow");
+
             move_buffer_content(buf, chars_parsed, chars_read);
             chars_read -= chars_parsed;
-            // TODO: fix \r\n splitted in the middle!
             chars_parsed = 0;
         }
     }
@@ -315,16 +270,12 @@ size_t read_headers(int sock, char **status_line, bool *chunked,
     return chars_read;
 }
 
-void move_buffer_content(char *buffer, size_t parsed, size_t read) {
-    memmove(buffer, buf + parsed, read - parsed);
-}
 
 int parse_header_line(char *line, size_t line_len, char **status_line,
                       bool *chunked, ssize_t *content_len) {
     static const char *CHUNKED = "chunked";
     static const char *STATUS_200 = "200";
-//    fwrite(line, line_len, 1, stderr);
-//    putc('\n', stderr);
+
     HeaderField hf = classify_header_field(line, line_len);
     switch (hf) {
         case STATUS:
@@ -337,23 +288,17 @@ int parse_header_line(char *line, size_t line_len, char **status_line,
             handle_cookie(line + SET_COOKIE_LEN, line_len - SET_COOKIE_LEN);
             break;
         case CONTENT_LENGTH:
-            // TODO: better
             *content_len = strtoul(line + CONTENT_LENGTH_LEN, NULL, 10);
             break;
         case TRANSFER_ENCODING:
-            *chunked = starts_with(line + TRANSFER_ENC_LEN, CHUNKED,
-                                   min(line_len - TRANSFER_ENC_LEN,
-                                       (CHUNKED_LEN)));
+            *chunked = (line_len - TRANSFER_ENC_LEN >= CHUNKED_LEN) &&
+                       starts_with(line + TRANSFER_ENC_LEN, CHUNKED,
+                                   CHUNKED_LEN);
             break;
         default:
             break;
     }
     return 0;
-}
-
-void handle_cookie(char *value_begin, size_t line_len) {
-    size_t true_len = get_header_field_value_len(value_begin, line_len);
-    print_line(value_begin, true_len);
 }
 
 HeaderField classify_header_field(const char *header_line, size_t line_len) {
@@ -379,6 +324,16 @@ HeaderField classify_header_field(const char *header_line, size_t line_len) {
         return OTHER;
 }
 
+void handle_cookie(char *value_begin, size_t line_len) {
+    size_t true_len = get_header_field_value_len(value_begin, line_len);
+    print_line(value_begin, true_len);
+}
+
+size_t get_header_field_value_len(const char *value_begin, size_t line_len) {
+    static const char DELIM = ';';
+    char *delim_pos = memchr(value_begin, DELIM, line_len);
+    return (delim_pos == NULL) ? line_len : delim_pos - value_begin;
+}
 
 /**
  * Checks if char sequence `s` contains `with_str` as a prefix, where `with_str`
@@ -391,7 +346,6 @@ HeaderField classify_header_field(const char *header_line, size_t line_len) {
 bool starts_with(const char *s, const char *with_str, size_t len) {
     return strncasecmp(s, with_str, len) == 0;
 }
-
 
 /**
  * Returns position of the first occurrence of \r\n from the beginning of the
@@ -406,21 +360,72 @@ ssize_t find_crlf(const char *str, size_t len) {
     return (res + 1 == len) ? -1 : res;
 }
 
-size_t get_header_field_value_len(const char *value_begin, size_t line_len) {
-    static const char DELIM = ';';
-    char *delim_pos = memchr(value_begin, DELIM, line_len);
-    return (delim_pos == NULL) ? line_len : delim_pos - value_begin;
+size_t read_content(int sock, size_t resp_read, bool chunked) {
+    size_t content_len = 0;
+    size_t chunk_size_pos = 0;
+    size_t chunk_size_fragmented = 0;
+
+    size_t _total_read = 0;
+    size_t _no_chunks = 0;
+    size_t _chunksize_lens = 0;
+
+    size_t read_len = 0;
+    while (resp_read > 0 ||
+           (read_len = receive_response(sock, buf + resp_read,
+                                        BUFFER_SIZE - resp_read)) > 0) {
+        resp_read += read_len;
+        _total_read += resp_read;
+
+        if (chunked) {
+            while (chunk_size_pos < resp_read) {
+                assert((chunk_size_fragmented > 0 &&
+                        (buf[chunk_size_pos] == '\r' ||
+                         buf[chunk_size_pos] == '\n')) ||
+                       isxdigit(*(buf + chunk_size_pos)));
+
+                char *cr_pos = memchr(buf + chunk_size_pos, '\r',
+                                      resp_read - chunk_size_pos);
+                size_t chunk_size_len = (cr_pos == NULL) ? (resp_read -
+                                                            chunk_size_pos) :
+                                        (cr_pos - (buf + chunk_size_pos));
+
+                memcpy(tmp + chunk_size_fragmented, buf + chunk_size_pos,
+                       chunk_size_len);
+                assert(chunk_size_pos + chunk_size_len <=
+                       resp_read);
+
+                if (chunk_size_pos + chunk_size_len == resp_read) {
+                    chunk_size_fragmented = chunk_size_len;
+                    chunk_size_pos += chunk_size_len;
+                } else {
+                    assert(*(buf + chunk_size_pos +
+                             chunk_size_len) == '\r');
+                    ++_no_chunks;
+                    _chunksize_lens += chunk_size_len + chunk_size_fragmented;
+                    tmp[chunk_size_fragmented + chunk_size_len] = '\0';
+                    size_t chunk_size = strtoul(tmp, NULL, 16);
+                    // The end of chunked message is determined by a zero-chunk
+                    if (chunk_size == 0) // so we know the correct length now.
+                        return content_len;
+                    content_len += chunk_size;
+                    chunk_size_pos += (chunk_size + chunk_size_len +
+                                       2 * CRLF_LEN);
+                    chunk_size_fragmented = 0;
+                }
+            }
+            chunk_size_pos -= resp_read;
+        } else {
+            content_len += resp_read;
+        }
+        resp_read = 0;
+    }
+    assert(!chunked ||
+           (_total_read ==
+            content_len + _no_chunks * CRLF_LEN * 2 + _chunksize_lens
+            && chunk_size_pos == 0));
+    return content_len;
 }
 
-size_t receive_response(int sock, char *buffer, size_t max_to_read) {
-    size_t total_received_len = 0;
-    ssize_t read_res;
-    while ((read_res = read(
-            sock, buffer + total_received_len,
-            max_to_read - total_received_len)) > 0) {
-        total_received_len += read_res;
-    }
-    if (read_res < 0)
-        syserr("response read error");
-    return total_received_len;
+void move_buffer_content(char *buffer, size_t parsed, size_t read) {
+    memmove(buffer, buf + parsed, read - parsed);
 }
