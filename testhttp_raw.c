@@ -57,7 +57,7 @@ size_t get_header_field_value_len(const char *value_begin, size_t line_len);
 
 void handle_cookie(char *value_begin, size_t line_len);
 
-void get_ip_port(char *ip_port, char **addr, char **port);
+void parse_addr_port(char *ip_port, char **addr, char **port);
 
 size_t send_bytes(int sock, char *bytes, size_t n_bytes);
 
@@ -120,12 +120,14 @@ void argparse(int argc, char **argv, char **addr, char **port,
         fatal("%s <adres połączenia>:<port> <plik ciasteczek> <testowany adres http>",
               argv[0]);
     }
-    get_ip_port(argv[1], addr, port);
+    parse_addr_port(argv[1], addr, port);
+    if (*port == NULL || *addr == NULL)
+        fatal("brak adresu lub numeru portu");
     *cookie_filename = argv[2];
     *uri = argv[3];
 }
 
-void get_ip_port(char *ip_port, char **addr, char **port) {
+void parse_addr_port(char *ip_port, char **addr, char **port) {
     *addr = strtok(ip_port, ":");
     *port = strtok(NULL, ":");
 }
