@@ -36,8 +36,6 @@ size_t receive_response(int sock, char *buffer, size_t max_to_read);
 size_t
 read_headers(int sock, char **status_line, bool *chunked, ssize_t *content_len);
 
-ssize_t parse_header_line1(int sock, char **line_ret, size_t *retrieve);
-
 ssize_t find_crlf(const char *str, size_t len);
 
 int parse_header_line(char *line, size_t line_len, char **status_line,
@@ -102,15 +100,18 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
         if (chunked) {
             while (chunk_size_pos < resp_read) {
                 assert((chunk_size_fragmented > 0 &&
-                       (buf[chunk_size_pos] == '\r' || buf[chunk_size_pos] == '\n')) ||
+                        (buf[chunk_size_pos] == '\r' ||
+                         buf[chunk_size_pos] == '\n')) ||
                        isxdigit(*(buf + chunk_size_pos)));
 //                ssize_t chunk_size_len = find_crlf(buf + chunk_size_pos,
 //                                                   resp_read - chunk_size_pos);
-                char* cr_pos = memchr(buf + chunk_size_pos, '\r', resp_read - chunk_size_pos);
+                char *cr_pos = memchr(buf + chunk_size_pos, '\r',
+                                      resp_read - chunk_size_pos);
 //                if (chunk_size_len == -1) {
 //                    chunk_size_len = resp_read - chunk_size_pos;
 //                }
-                size_t chunk_size_len = (cr_pos == NULL) ? (resp_read - chunk_size_pos) :
+                size_t chunk_size_len = (cr_pos == NULL) ? (resp_read -
+                                                            chunk_size_pos) :
                                         (cr_pos - (buf + chunk_size_pos));
 
                 memcpy(tmp + chunk_size_fragmented, buf + chunk_size_pos,
@@ -207,14 +208,6 @@ void print_line(const char *line, const size_t len) {
     putc('\n', stdout);
 }
 
-
-size_t delim_position(const char *str, const char delim) {
-    size_t res = 0; // Assumption: such character or \r\n exists somewhere in header.
-    while (str[res] != delim && !(str[res] == '\r' && str[res + 1] == '\n'))
-        ++res;
-    return res;
-}
-
 int main(int argc, char *argv[]) {
     char *addr, *port, *cookie_filename, *uri;
     argparse(argc, argv, &addr, &port, &cookie_filename, &uri);
@@ -228,15 +221,8 @@ int main(int argc, char *argv[]) {
     int sock = create_socket(addr, port);
     send_request(sock, buf, req_len);
 
-//    char *line;
-//    size_t status_line_len = read_status_line(sock, &line);
-//    if (status_line_len > 0) {
-//        print_line(line, status_line_len);
-//        return 0;
-//    }
-
     bool chunked = false;
-    ssize_t content_len = -1, content_read_in_buffer = 0;
+    ssize_t content_len = -1, content_read_in_buffer;
     char *status_line = NULL;
     content_read_in_buffer = read_headers(sock, &status_line, &chunked,
                                           &content_len);
@@ -291,7 +277,7 @@ int main(int argc, char *argv[]) {
 size_t read_headers(int sock, char **status_line, bool *chunked,
                     ssize_t *content_len) {
     assert(*status_line == NULL);
-    size_t chars_read = 0, chars_parsed = 0, received = 0;
+    size_t chars_read = 0, chars_parsed = 0, received;
     ssize_t current_line_len = -1; // TODO: maybe leave \r\n instead of chunksize first
     while (current_line_len != 0 &&
            (received = receive_response(sock, buf + chars_read,
@@ -332,14 +318,14 @@ void move_buffer_content(char *buffer, size_t parsed, size_t read) {
 
 int parse_header_line(char *line, size_t line_len, char **status_line,
                       bool *chunked, ssize_t *content_len) {
-    static const char *_CHUNKED = "chunked";
-    static const char *_STATUS_200 = "200";
+    static const char *CHUNKED = "chunked";
+    static const char *STATUS_200 = "200";
 //    fwrite(line, line_len, 1, stderr);
 //    putc('\n', stderr);
     HeaderField hf = classify_header_field(line, line_len);
     switch (hf) {
         case STATUS:
-            if (strncasecmp(line + STATUS_LEN, _STATUS_200, 3) != 0) {
+            if (strncasecmp(line + STATUS_LEN, STATUS_200, 3) != 0) {
                 *status_line = line;
                 return 1;
             }
@@ -352,7 +338,7 @@ int parse_header_line(char *line, size_t line_len, char **status_line,
             *content_len = strtoul(line + CONTENT_LENGTH_LEN, NULL, 10);
             break;
         case TRANSFER_ENCODING:
-            *chunked = starts_with(line + TRANSFER_ENC_LEN, _CHUNKED,
+            *chunked = starts_with(line + TRANSFER_ENC_LEN, CHUNKED,
                                    min(line_len - TRANSFER_ENC_LEN,
                                        (CHUNKED_LEN)));
             break;
@@ -415,78 +401,6 @@ ssize_t find_crlf(const char *str, size_t len) {
     ssize_t res = 0;
     while (res + 1 < len && (str[res] != '\r' || str[res + 1] != '\n')) ++res;
     return (res + 1 == len) ? -1 : res;
-}
-
-/**
- *
- * @param sock
- * @param line_ret
- * @param retrieve
- * @return
- */
-ssize_t parse_header_line1(int sock, char **line_ret, size_t *retrieve) {
-    static size_t offset = 0;
-    static size_t read_till = 0;
-    if (retrieve != NULL) {
-        *retrieve = read_till;
-        return offset;
-    }
-
-    static size_t _no_reads = 0;
-
-    char *crlf_position = NULL;
-    size_t line_len;
-    assert(buf[read_till] == '\0');
-//    fprintf(stderr, "Read till: %zu\n", read_till);
-
-    while (offset == read_till ||
-           !(crlf_position = strstr(buf + offset, CRLF))) {
-        if (read_till == BUFFER_SIZE - 1) {
-            if (read_till == offset)
-                syserr("buffer overflow");
-            read_till -= offset;
-            memmove(buf, buf + offset, read_till);
-            offset = 0;
-        } else {
-            offset = read_till; // TODO: fragment?
-//            offset = read_till - (buf[read_till - 1] == '\r');
-        }
-        assert(read_till < BUFFER_SIZE - 1); // We don't want to read 0 bytes.
-
-        ssize_t resp_len;
-        while ((resp_len = read(
-                sock, buf + read_till, BUFFER_SIZE - read_till - 1)) > 0) {
-//            fprintf(stderr, "Reads so far: %zu\n", ++_no_reads);
-            assert(offset + resp_len < BUFFER_SIZE);
-            read_till += resp_len;
-            assert(offset < read_till);
-        }
-        if (resp_len < 0)
-            syserr("response read error");
-        buf[read_till] = '\0';
-//        if (read_till == BUFFER_SIZE - 1) {
-//            if ((crlf_position = strstr(buf + offset, CRLF)))
-//                break;
-//            else if (offset > 0) {
-//                read_till -= offset;
-//                memmove(buf, buf + offset, read_till);
-//                offset = 0;
-//            } else {
-//                return -1; // Buffer overflow.
-//            }
-//        }
-        assert(offset < read_till);
-    }
-
-    *line_ret = buf + offset;
-    line_len = (crlf_position - *line_ret);
-    // Found CRLF!!!
-    assert(offset + line_len < BUFFER_SIZE && buf[offset + line_len] == '\r'
-           && buf[offset + line_len + 1] == '\n');
-    buf[offset + line_len] = '\0';
-    offset += line_len + 2;
-    assert(line_len == 0 || offset < read_till);
-    return line_len;
 }
 
 size_t get_header_field_value_len(const char *value_begin, size_t line_len) {
