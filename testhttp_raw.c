@@ -133,6 +133,9 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
                     _chunksize_lens += chunk_size_len + chunk_size_fragmented;
                     tmp[chunk_size_fragmented + chunk_size_len] = '\0';
                     size_t chunk_size = strtoul(tmp, NULL, 16);
+                    // The end of chunked message is determined by a zero-chunk
+                    if(chunk_size == 0) // so we know the correct length now.
+                        return content_len;
                     content_len += chunk_size;
                     chunk_size_pos += (chunk_size + chunk_size_len +
                                        4); // TODO: why?
