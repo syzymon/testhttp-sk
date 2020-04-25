@@ -75,14 +75,13 @@ int create_socket(const char *addr, const char *port);
 void argparse(int argc, char *argv[], char **addr, char **port,
               char **cookie_filename, char **uri);
 
-void print_line(const char *line, const size_t len) {
-    fwrite(line, len, sizeof(char), stdout);
-    fputc('\n', stdout);
-}
+char *parse_http_addr(char *addr);
+
+void print_line(const char *line, const size_t len);
 
 int main(int argc, char *argv[]) {
-    char *addr, *port, *cookie_filename, *uri;
-    argparse(argc, argv, &addr, &port, &cookie_filename, &uri);
+    char *addr, *port, *cookie_filename, *http_addr;
+    argparse(argc, argv, &addr, &port, &cookie_filename, &http_addr);
 
     int sock = create_socket(addr, port);
 
@@ -90,6 +89,7 @@ int main(int argc, char *argv[]) {
     if (cookies == NULL) {
         syserr("cannot open cookie file");
     }
+    char *uri = parse_http_addr(http_addr);
     send_request(sock, uri, addr, port, cookies);
     fclose(cookies);
 
@@ -111,6 +111,13 @@ int main(int argc, char *argv[]) {
     if (close(sock) < 0)
         syserr("closing stream socket");
     return 0;
+}
+
+char *parse_http_addr(char *addr) {
+    size_t slashes_encountered = 0, addr_len = strlen(addr), idx = 0;
+    for (; idx < addr_len &&
+           (slashes_encountered += (addr[idx] == '/')) < 3; ++idx);
+    return idx < addr_len ? addr + idx : "/";
 }
 
 
@@ -430,4 +437,9 @@ size_t read_content(int sock, size_t resp_read, bool chunked) {
 
 void move_buffer_content(char *buffer, size_t parsed, size_t read) {
     memmove(buffer, buf + parsed, read - parsed);
+}
+
+void print_line(const char *line, size_t len) {
+    fwrite(line, len, sizeof(char), stdout);
+    fputc('\n', stdout);
 }
