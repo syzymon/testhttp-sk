@@ -132,6 +132,7 @@ void argparse(int argc, char **argv, char **addr, char **port,
         fatal("brak adresu lub numeru portu");
     *cookie_filename = argv[2];
     *uri = argv[3];
+    printf("%s %s %s %s\n", *addr, *port, *cookie_filename, *uri);
 }
 
 void parse_addr_port(char *ip_port, char **addr, char **port) {
