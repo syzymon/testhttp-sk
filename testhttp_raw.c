@@ -65,7 +65,7 @@ int bytes_added(int result_of_sprintf) {
     return (result_of_sprintf > 0) ? result_of_sprintf : 0;
 }
 
-void send_request(int sock, char *uri, char *addr, char *port,
+void send_request(int sock, char *uri, char *host,
                   FILE *cookies_file);
 
 size_t read_content(int sock, size_t resp_read, bool chunked);
@@ -75,9 +75,9 @@ int create_socket(const char *addr, const char *port);
 void argparse(int argc, char *argv[], char **addr, char **port,
               char **cookie_filename, char **uri);
 
-char *parse_http_addr(char *addr);
+void print_line(const char *line, size_t len);
 
-void print_line(const char *line, const size_t len);
+char *get_path_and_host(char *addr, char **host);
 
 int main(int argc, char *argv[]) {
     char *addr, *port, *cookie_filename, *http_addr;
@@ -89,8 +89,9 @@ int main(int argc, char *argv[]) {
     if (cookies == NULL) {
         syserr("cannot open cookie file");
     }
-    char *uri = parse_http_addr(http_addr);
-    send_request(sock, uri, addr, port, cookies);
+    char *uri, *host;
+    uri = get_path_and_host(http_addr, &host);
+    send_request(sock, uri, host, cookies);
     fclose(cookies);
 
     bool chunked = false;
@@ -113,13 +114,6 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-char *parse_http_addr(char *addr) {
-    size_t slashes_encountered = 0, addr_len = strlen(addr), idx = 0;
-    for (; idx < addr_len &&
-           (slashes_encountered += (addr[idx] == '/')) < 3; ++idx);
-    return idx < addr_len ? addr + idx : "/";
-}
-
 
 void argparse(int argc, char **argv, char **addr, char **port,
               char **cookie_filename, char **uri) {
@@ -132,7 +126,7 @@ void argparse(int argc, char **argv, char **addr, char **port,
         fatal("brak adresu lub numeru portu");
     *cookie_filename = argv[2];
     *uri = argv[3];
-    printf("%s %s %s %s\n", *addr, *port, *cookie_filename, *uri);
+    fprintf(stderr, "%s %s %s %s\n", *addr, *port, *cookie_filename, *uri);
 }
 
 void parse_addr_port(char *ip_port, char **addr, char **port) {
@@ -202,15 +196,17 @@ size_t receive_response(int sock, char *buffer, size_t max_to_read) {
 }
 
 void
-send_request(int sock, char *uri, char *addr, char *port, FILE *cookies_file) {
+send_request(int sock, char *uri, char *host, FILE *cookies_file) {
+//    fprintf(stderr, "%s %s\n", uri, host);
     size_t length = 0;
 #define buf_append(format, args...) \
     length += bytes_added(sprintf(buf + length, format, args))
-    buf_append("GET %s HTTP/1.1\r\n", uri);
-    buf_append("Host: %s:%s\r\n", addr, port);
+    buf_append("GET /%s HTTP/1.1\r\n", uri);
+    buf_append("Host: %s\r\n", host);
     buf_append("User-Agent: %s\r\n", "testhttp_raw/2.13.7");
     buf_append("Accept: %s\r\n", "*/*");
     buf_append("Connection: %s\r\n", "close");
+    fputs(buf, stderr);
     size_t sent = send_bytes(sock, buf, length);
 
     assert(sent == length);
@@ -222,6 +218,7 @@ send_request(int sock, char *uri, char *addr, char *port, FILE *cookies_file) {
         else
             tmp[cookie_line_len - 1] = '\0';
         sprintf(buf, "Cookie: %s\r\n", tmp);
+        fputs("SENT?!", stderr);
         sent = send_bytes(sock, buf, strlen(buf));
         assert(sent == strlen(buf));
     }
@@ -443,4 +440,21 @@ void move_buffer_content(char *buffer, size_t parsed, size_t read) {
 void print_line(const char *line, size_t len) {
     fwrite(line, len, sizeof(char), stdout);
     fputc('\n', stdout);
+}
+
+char *get_path_and_host(char *addr, char **host) {
+    size_t slashes_encountered = 0, addr_len = strlen(addr), host_begin = 0;
+    for (; host_begin < addr_len && slashes_encountered < 2; ++host_begin)
+        slashes_encountered += (addr[host_begin] == '/');
+    size_t path_begin = host_begin;
+    for (; path_begin < addr_len &&
+           (slashes_encountered += (addr[path_begin] == '/')) <
+           3; ++path_begin);
+    *host = addr + host_begin;
+    if (path_begin < addr_len && addr[path_begin] == '/') {
+        addr[path_begin] = '\0';
+        return addr + path_begin + 1;
+    } else {
+        return "";
+    }
 }

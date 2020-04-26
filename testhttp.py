@@ -4,6 +4,7 @@ import socket
 import subprocess
 import argparse
 from urllib.parse import urlparse
+from pathlib import Path
 
 SERVICE_IP = "127.0.0.1"
 PID_FILE = "/tmp/stunnel.pid"
@@ -30,22 +31,24 @@ def create_config_str(service_netloc, connect_netloc):
 
 
 def run_testhttp(server_netloc, cookies, uri):
-    subprocess.run(["./testhttp_raw", server_netloc, cookies, uri])
+    raw_path = Path(__file__).parent.resolve() / 'testhttp_raw'
+    subprocess.run([raw_path, server_netloc, cookies, uri])
 
 
 def run_testhttps(server_netloc, cookies, uri):
-    free_port = get_free_tcp_port()
-    service_netloc = "{}:{}".format(SERVICE_IP, free_port)
-    config_input = create_config_str(service_netloc, server_netloc)
-    subprocess.run(["stunnel", "-fd", "0"], universal_newlines=True,
-                   input=config_input)
+    try:
+        free_port = get_free_tcp_port()
+        service_netloc = "{}:{}".format(SERVICE_IP, free_port)
+        config_input = create_config_str(service_netloc, server_netloc)
+        subprocess.run(["stunnel", "-fd", "0"], universal_newlines=True,
+                       input=config_input)
 
-    run_testhttp(service_netloc, cookies, uri)
-
-    with open(PID_FILE) as pid_file:
-        pid = int(pid_file.readline())
-        os.kill(pid, 9)
-    os.remove(PID_FILE)
+        run_testhttp(service_netloc, cookies, uri)
+    finally:
+        with open(PID_FILE) as pid_file:
+            pid = int(pid_file.readline())
+            os.kill(pid, 9)
+        os.remove(PID_FILE)
 
 
 if __name__ == "__main__":
