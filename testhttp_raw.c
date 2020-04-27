@@ -66,7 +66,9 @@ int main(int argc, char *argv[]) {
     content_read_in_buffer = read_headers(sock, &status_line, &chunked,
                                           &content_len);
     if (status_line != NULL) {
-        print_line(buf, content_read_in_buffer);
+        char *after_http = memchr(buf, ' ', content_read_in_buffer);
+        print_line(after_http + 1,
+                   content_read_in_buffer - (after_http - buf) - 1);
         return 0;
     }
 
