@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 SERVICE_IP = "127.0.0.1"
-PID_FILE = "/tmp/stunnel.pid"
+PID_PATH = Path("/tmp/stunnel.pid")
 
 service_config_template = \
     """pid = {}
@@ -26,7 +26,7 @@ def get_free_tcp_port():
 
 
 def create_config_str(service_netloc, connect_netloc):
-    return service_config_template.format(PID_FILE, service_netloc,
+    return service_config_template.format(str(PID_PATH), service_netloc,
                                           connect_netloc)
 
 
@@ -45,10 +45,10 @@ def run_testhttps(server_netloc, cookies, uri):
 
         run_testhttp(service_netloc, cookies, uri)
     finally:
-        with open(PID_FILE) as pid_file:
-            pid = int(pid_file.readline())
+        if PID_PATH.exists():
+            pid = int(PID_PATH.read_text())
             os.kill(pid, 9)
-        os.remove(PID_FILE)
+            PID_PATH.unlink()
 
 
 if __name__ == "__main__":
